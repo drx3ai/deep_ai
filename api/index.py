@@ -10,61 +10,65 @@ from openai import OpenAI
 from .utils.prompt import ClientMessage, convert_to_openai_messages
 from .utils.tools import get_current_weather
 
-
 load_dotenv(".env.local")
 
 app = FastAPI()
 
-client = OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY"),
-)
+# تعريف دالة لإنشاء عميل النموذج المناسب
+def get_model_client(model_id: str):
+    if model_id == 'deepseek':
+        return OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com/v1"
+        )
+    elif model_id == 'huggingface':
+        return OpenAI(
+            api_key=os.environ.get("HF_API_KEY"),
+            base_url="https://api-inference.huggingface.co/models"
+        )
+    elif model_id == 'groq':
+        return OpenAI(
+            api_key=os.environ.get("GROQ_API_KEY"),
+            base_url="https://api.groq.com/openai/v1"
+        )
+    else:
+        # النموذج الافتراضي (DeepSeek)
+        return OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com/v1"
+        )
 
+# تعريف دالة للحصول على اسم النموذج المناسب
+def get_model_name(model_id: str):
+    if model_id == 'deepseek':
+        return "deepseek-chat"
+    elif model_id == 'huggingface':
+        return "mistralai/Mistral-7B-Instruct-v0.2"  # مثال لنموذج Hugging Face
+    elif model_id == 'groq':
+        return "mixtral-8x7b-32768"  # مثال لنموذج Groq
+    else:
+        return "deepseek-chat"  # الافتراضي
 
 class Request(BaseModel):
     messages: List[ClientMessage]
-
+    model_id: str = 'deepseek'  # إضافة حقل model_id
 
 available_tools = {
     "get_current_weather": get_current_weather,
 }
 
-def do_stream(messages: List[ChatCompletionMessageParam]):
-    stream = client.chat.completions.create(
-        messages=messages,
-        model="gpt-4o",
-        stream=True,
-        tools=[{
-            "type": "function",
-            "function": {
-                "name": "get_current_weather",
-                "description": "Get the current weather at a location",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "latitude": {
-                            "type": "number",
-                            "description": "The latitude of the location",
-                        },
-                        "longitude": {
-                            "type": "number",
-                            "description": "The longitude of the location",
-                        },
-                    },
-                    "required": ["latitude", "longitude"],
-                },
-            },
-        }]
-    )
-
-    return stream
-
-def stream_text(messages: List[ChatCompletionMessageParam], protocol: str = 'data'):
+def stream_text(messages: List[ChatCompletionMessageParam], model_id: str, protocol: str = 'data'):
     draft_tool_calls = []
     draft_tool_calls_index = -1
-
+    
+    # الحصول على العميل واسم النموذج المناسب
+    client = get_model_client(model_id)
+    model_name = get_model_name(model_id)
+    
+    # إنشاء الدفق مع النموذج المحدد
     stream = client.chat.completions.create(
         messages=messages,
-        model="gpt-4o",
+        model=model_name,
         stream=True,
         tools=[{
             "type": "function",
@@ -86,7 +90,7 @@ def stream_text(messages: List[ChatCompletionMessageParam], protocol: str = 'dat
                     "required": ["latitude", "longitude"],
                 },
             },
-        }]
+        }] if model_id == 'deepseek' else None  # الأدوات متاحة فقط لـ DeepSeek حالياً
     )
 
     for chunk in stream:
@@ -140,14 +144,11 @@ def stream_text(messages: List[ChatCompletionMessageParam], protocol: str = 'dat
                 completion=completion_tokens
             )
 
-
-
-
 @app.post("/api/chat")
 async def handle_chat_data(request: Request, protocol: str = Query('data')):
     messages = request.messages
     openai_messages = convert_to_openai_messages(messages)
 
-    response = StreamingResponse(stream_text(openai_messages, protocol))
+    response = StreamingResponse(stream_text(openai_messages, request.model_id, protocol))
     response.headers['x-vercel-ai-data-stream'] = 'v1'
     return response
